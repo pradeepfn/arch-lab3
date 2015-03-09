@@ -84,11 +84,28 @@ void run_proc(proc_stats_t* p_stats) {
     
     // print result
     if(cpu.begin_dump > 0){
+
+for(unsigned i = 0; i < all_instrs.size(); i++){
+auto instr = all_instrs[i];
+if(instr->id >= cpu.begin_dump && instr->id <= cpu.end_dump){
+	std::cout<< instr->id << "\t"
+			 << instr->op_code<<"\t"
+			 << instr->dest_reg<<"\t"
+			 << instr->src_reg[0]<<"\t"
+			 << instr->src_reg[1] << std::endl;
+}
+}
+
+        std::cout << std::endl;
         std::cout << "INST\tFETCH\tDISP\tSCHED\tEXEC\tSTATE" << std::endl;
 
         for(unsigned i = 0; i < all_instrs.size(); i++){
             auto instr = all_instrs[i];
             if(instr->id >= cpu.begin_dump && instr->id <= cpu.end_dump){
+		//		std::cout<< instr->op_code<<"\t"
+		//				 << instr->dest_reg<<"\t"
+		//				 << instr->src_reg[0]<<"\t"
+		//				 << instr->src_reg[1] << std::endl;
                 std::cout << instr->id << "\t"
                           << instr->cycle_fetch_decode << "\t" 
                           << instr->cycle_dispatch << "\t"
@@ -101,13 +118,14 @@ void run_proc(proc_stats_t* p_stats) {
     }
 }
 
+
 /** STATE UPDATE stage */
 void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {
         // record instr entry cycle
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];
-            if (instr->executed && !instr->cycle_status_update) {
+            if (instr->executed == true && !instr->cycle_status_update) {
                 instr->cycle_status_update = p_stats->cycle_count;              
             }
         }        
@@ -118,8 +136,8 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
             auto instr = *it;
 
             if(instr->cycle_status_update){
-					it = scheduling_queue.erase(it);
-					p_stats->retired_instruction++; 
+                it = scheduling_queue.erase(it);
+                p_stats->retired_instruction++;
             }else{
                 it++;
             }
@@ -129,6 +147,9 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
             cpu.finished = true;        
     }
 }
+
+
+
 
 /** EXECUTE stage */
 void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
@@ -140,6 +161,7 @@ void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
             if (instr->fired == true && !instr->cycle_execute) {
                 instr->cycle_execute = p_stats->cycle_count;                  
             }
+			if(instr->fired){
 			if( (instr->dest_reg != -1) && ( bus_index < cdb.size()) ){ 
 				cdb[bus_index].free = false;
 				cdb[bus_index].reg = instr->dest_reg;
@@ -150,6 +172,7 @@ void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
 			}else if(instr->dest_reg == -1){// no bus usage
 				instr->executed = true;
 			}	
+			}
         }
     } else {
     }
@@ -195,11 +218,12 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 		//find executed instructions still stalled in functional units
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
 			auto instr = scheduling_queue[i];
-			if (instr->fired == true && instr->cycle_execute){
-				assert(instr->executed);
+			if (instr->cycle_execute && !instr->executed){
+				//assert(instr->executed);
 				fu_used_cnt[instr->op_code]++;
 			}
 		}
+		printf("cycle : %ld , used :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
         // fire all marked instructions if possible
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];            
@@ -212,6 +236,7 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 				}
             }
         }
+		printf("cycle : %ld , final :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
     }
 }
 
@@ -226,9 +251,12 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
 		// we find out the number of free slots in the scheduling queue and fill them up
 		// with dispatching queue in-order	
 		uint32_t free_sq_slots = get_sqfree_slots();
-        for(unsigned i = 0; i < free_sq_slots; i++){
+        for(unsigned i = 0; i < dispatching_queue.size(); i++){
             auto instr = dispatching_queue[i];            
-            instr->reserved = true;
+			if(free_sq_slots > 0){
+				instr->reserved = true;
+				free_sq_slots--;
+			}
         }
 
         //update the register file via result bus
@@ -239,7 +267,7 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
 				if(register_file[reg].tag == tag){
 					if(register_file[reg].ready){
 						std::cout<< "register file: cannot happen"<<std::endl;
-						assert(true);
+						//assert(true);
 					}
 					register_file[reg].ready = true;
 				}
