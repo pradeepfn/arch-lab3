@@ -1,4 +1,5 @@
 #include "procsim.hpp"
+#include <assert.h>
 
 proc_settings_t cpu;
 
@@ -6,14 +7,14 @@ std::vector<proc_inst_ptr_t> all_instrs;
 
 std::deque<proc_inst_ptr_t> dispatching_queue;
 std::vector<proc_inst_ptr_t> scheduling_queue;
-int scheduling_queue_limit;
+uint32_t scheduling_queue_limit;
 
 std::unordered_map<uint32_t, register_info_t> register_file;
 
 std::vector<proc_cdb_t> cdb;
 std::unordered_map<uint32_t, uint32_t> fu_cnt;
 
-
+int get_sqfree_slots();
 /**
  * Subroutine for initializing the processor. You many add and initialize any global or heap
  * variables as needed.
@@ -117,8 +118,8 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
             auto instr = *it;
 
             if(instr->cycle_status_update){
-                it = scheduling_queue.erase(it);
-                p_stats->retired_instruction++;
+					it = scheduling_queue.erase(it);
+					p_stats->retired_instruction++; 
             }else{
                 it++;
             }
@@ -132,14 +133,23 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
 /** EXECUTE stage */
 void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {
+		uint32_t bus_index = 0;
         // record instr entry cycle
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];            
             if (instr->fired == true && !instr->cycle_execute) {
                 instr->cycle_execute = p_stats->cycle_count;                  
-
-                instr->executed = true;   
             }
+			if( (instr->dest_reg != -1) && ( bus_index < cdb.size()) ){ 
+				cdb[bus_index].free = false;
+				cdb[bus_index].reg = instr->dest_reg;
+				cdb[bus_index].tag = instr->id;
+				//instr->cdb_written = true;
+                instr->executed = true;   
+				bus_index++;
+			}else if(instr->dest_reg == -1){// no bus usage
+				instr->executed = true;
+			}	
         }
     } else {
     }
@@ -153,19 +163,53 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
             auto instr = scheduling_queue[i];            
             if (instr->fire)
                 continue;
-            
+    
             if (!instr->cycle_schedule) {
                 instr->cycle_schedule = p_stats->cycle_count;                 
             } 
-            
-            instr->fire = true;
+
+			//if there are no dependencies,  fire
+			if(instr->src_ready[0] && instr->src_ready[1]){
+				instr->fire = true;
+			}
         } 
     } else {        
+		uint32_t fu_used_cnt[3] = {0,0,0};
+		
+		//update the schedule queue via cdb
+		for(uint32_t i=0; i< scheduling_queue.size(); i++){
+			auto instr = scheduling_queue[i];
+			if(!instr->fire){
+				for(uint32_t j = 0; j < cdb.size(); j++){
+					if(!cdb[j].free){
+						for(int k=0;k<2;k++){
+							if( !instr->src_ready[k] && instr->src_tag[k] == cdb[j].tag){
+								assert((uint32_t)instr->src_reg[k] != cdb[j].reg);
+								instr->src_ready[k] = true;
+							}
+						}
+					}
+				}
+			}
+		}
+		//find executed instructions still stalled in functional units
+        for(unsigned i = 0; i < scheduling_queue.size(); i++){
+			auto instr = scheduling_queue[i];
+			if (instr->fired == true && instr->cycle_execute){
+				assert(instr->executed);
+				fu_used_cnt[instr->op_code]++;
+			}
+		}
         // fire all marked instructions if possible
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];            
             if (instr->fire && !instr->fired) {                
-                instr->fired = true;
+				// if no structural hazards, move in to fired state. ready to exec.
+				int fu_index = instr->op_code;
+				if(fu_used_cnt[fu_index] < fu_cnt[fu_index]){
+					instr->fired = true;
+					fu_used_cnt[fu_index]++;	
+				}
             }
         }
     }
@@ -178,26 +222,68 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
             p_stats->max_disp_size = dispatching_queue.size();
             
         p_stats->sum_disp_size += dispatching_queue.size();
-
-        for(unsigned i = 0; i < dispatching_queue.size(); i++){
+	
+		// we find out the number of free slots in the scheduling queue and fill them up
+		// with dispatching queue in-order	
+		uint32_t free_sq_slots = get_sqfree_slots();
+        for(unsigned i = 0; i < free_sq_slots; i++){
             auto instr = dispatching_queue[i];            
             instr->reserved = true;
         }
+
+        //update the register file via result bus
+		for(uint32_t i=0; i< cdb.size();i++){
+			if(!cdb[i].free){//cdb valid
+				uint32_t reg = cdb[i].reg;
+				uint32_t tag = cdb[i].tag;
+				if(register_file[reg].tag == tag){
+					if(register_file[reg].ready){
+						std::cout<< "register file: cannot happen"<<std::endl;
+						assert(true);
+					}
+					register_file[reg].ready = true;
+				}
+			}
+		}
+
     } else {
         while (!dispatching_queue.empty()) {
             auto instr = dispatching_queue.front();
             
             if (!instr->reserved)
                 break;
-                
+            //populate the dependencies of the instruciton
+			for(int i=0;i<2;i++){
+				int32_t src_reg = instr->src_reg[i];
+				if(src_reg != -1){
+					if(register_file[src_reg].ready){
+						instr->src_ready[i] = true;
+					}else{
+						instr->src_ready[i] = false;
+						instr->src_tag[i] = register_file[src_reg].tag;
+					}
+				}else{
+					instr->src_ready[i] = true;
+				}
+			} 
+			// if the instruction produces result, make destination register wait.
+			if(instr->dest_reg != -1){
+				register_file[instr->dest_reg].tag = instr->id;
+				register_file[instr->dest_reg].ready = false; 
+			}
+			// remove from the dispatch queue and insert in to schedule queue
             scheduling_queue.push_back(instr);            
-
             dispatching_queue.pop_front();
         }        
+		
+		//clear the cdb
+		for(uint32_t i = 0; i < cdb.size();i++){
+			cdb[i].free = true;
+		}
     }
 }
-
 /** INSTR-FETCH & DECODE stage */
+// dispatching queue is infinite. So push new instruction block F each time.
 void instr_fetch_and_decode(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::SECOND) {          
         // read the next instructions 
@@ -235,6 +321,14 @@ void instr_fetch_and_decode(proc_stats_t* p_stats, const cycle_half_t &half) {
 }
 
 
-
-
-
+/*
+  we scan through the scheduling queue and find out how many instructions
+  slots are free. 
+*/
+int get_sqfree_slots(){
+	if(scheduling_queue.size() > scheduling_queue_limit){
+		printf("exceeded the limit in scheduling queue\n");
+		assert(true);
+	}
+	return (scheduling_queue_limit - scheduling_queue.size());
+}

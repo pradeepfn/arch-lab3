@@ -65,6 +65,7 @@ typedef struct _proc_inst_t
     bool fire;
     bool fired;
     bool executed;
+    bool cdb_written;
     
     uint64_t cycle_fetch_decode;
     uint64_t cycle_dispatch;
