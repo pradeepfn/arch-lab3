@@ -14,7 +14,12 @@ std::unordered_map<uint32_t, register_info_t> register_file;
 std::vector<proc_cdb_t> cdb;
 std::unordered_map<uint32_t, uint32_t> fu_cnt;
 
+
+int debug = 0;
+
 int get_sqfree_slots();
+void print_register_file();
+void print_cdb();
 /**
  * Subroutine for initializing the processor. You many add and initialize any global or heap
  * variables as needed.
@@ -85,7 +90,7 @@ void run_proc(proc_stats_t* p_stats) {
     // print result
     if(cpu.begin_dump > 0){
 
-for(unsigned i = 0; i < all_instrs.size(); i++){
+/*for(unsigned i = 0; i < all_instrs.size(); i++){
 auto instr = all_instrs[i];
 if(instr->id >= cpu.begin_dump && instr->id <= cpu.end_dump){
 	std::cout<< instr->id << "\t"
@@ -94,7 +99,7 @@ if(instr->id >= cpu.begin_dump && instr->id <= cpu.end_dump){
 			 << instr->src_reg[0]<<"\t"
 			 << instr->src_reg[1] << std::endl;
 }
-}
+}*/
 
         std::cout << std::endl;
         std::cout << "INST\tFETCH\tDISP\tSCHED\tEXEC\tSTATE" << std::endl;
@@ -122,6 +127,7 @@ if(instr->id >= cpu.begin_dump && instr->id <= cpu.end_dump){
 /** STATE UPDATE stage */
 void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {
+		if(debug){printf("state update: first half\n");}
         // record instr entry cycle
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];
@@ -130,6 +136,7 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
             }
         }        
     } else {
+		if(debug){printf("state update: second half\n");}
         // delete instructions from scheduling queue
         auto it = scheduling_queue.begin();
         while(it != scheduling_queue.end()){
@@ -154,6 +161,7 @@ void state_update(proc_stats_t* p_stats, const cycle_half_t &half) {
 /** EXECUTE stage */
 void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {
+		if(debug){printf("execute: first half\n");}
 		uint32_t bus_index = 0;
         // record instr entry cycle
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
@@ -161,26 +169,28 @@ void execute(proc_stats_t* p_stats, const cycle_half_t &half) {
             if (instr->fired == true && !instr->cycle_execute) {
                 instr->cycle_execute = p_stats->cycle_count;                  
             }
-			if(instr->fired){
-			if( (instr->dest_reg != -1) && ( bus_index < cdb.size()) ){ 
-				cdb[bus_index].free = false;
-				cdb[bus_index].reg = instr->dest_reg;
-				cdb[bus_index].tag = instr->id;
-				//instr->cdb_written = true;
-                instr->executed = true;   
-				bus_index++;
-			}else if(instr->dest_reg == -1){// no bus usage
-				instr->executed = true;
-			}	
+			if(instr->fired && !instr->executed){
+				if( (instr->dest_reg != -1) && ( bus_index < cdb.size()) ){ 
+					cdb[bus_index].free = false;
+					cdb[bus_index].reg = instr->dest_reg;
+					cdb[bus_index].tag = instr->id;
+					//instr->cdb_written = true;
+					instr->executed = true;   
+					bus_index++;
+				}else if(instr->dest_reg == -1){// no bus usage
+					instr->executed = true;
+				}	
 			}
         }
     } else {
+		if(debug){printf("execute: second half\n");}
     }
 }
 
 /** SCHEDULE stage */
 void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {
+		if(debug){printf("schedule: first half\n");}
         // record instr entry cycle
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];            
@@ -197,6 +207,7 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 			}
         } 
     } else {        
+		if(debug){printf("schedule: second half\n");}
 		uint32_t fu_used_cnt[3] = {0,0,0};
 		
 		//update the schedule queue via cdb
@@ -207,7 +218,9 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 					if(!cdb[j].free){
 						for(int k=0;k<2;k++){
 							if( !instr->src_ready[k] && instr->src_tag[k] == cdb[j].tag){
-								assert((uint32_t)instr->src_reg[k] != cdb[j].reg);
+								if((uint32_t)instr->src_reg[k] != cdb[j].reg){
+									printf("schedule queue: this cannot happen\n");
+								}
 								instr->src_ready[k] = true;
 							}
 						}
@@ -223,7 +236,7 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 				fu_used_cnt[instr->op_code]++;
 			}
 		}
-		printf("cycle : %ld , used :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
+		//printf("cycle : %ld , used :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
         // fire all marked instructions if possible
         for(unsigned i = 0; i < scheduling_queue.size(); i++){
             auto instr = scheduling_queue[i];            
@@ -236,13 +249,14 @@ void schedule(proc_stats_t* p_stats, const cycle_half_t &half) {
 				}
             }
         }
-		printf("cycle : %ld , final :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
+		//printf("cycle : %ld , final :  %d , %d, %d \n ", p_stats->cycle_count, fu_used_cnt[0],fu_used_cnt[1],fu_used_cnt[2]);
     }
 }
 
 /** DISPATCH stage */
 void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::FIRST) {    
+		if(debug){printf("dispatch: first half\n");}
         if (p_stats->max_disp_size < dispatching_queue.size())
             p_stats->max_disp_size = dispatching_queue.size();
             
@@ -258,6 +272,9 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
 				free_sq_slots--;
 			}
         }
+	   //printf("current cycle : %ld\n", p_stats->cycle_count); 
+       //print_cdb();
+	   //print_register_file();
 
         //update the register file via result bus
 		for(uint32_t i=0; i< cdb.size();i++){
@@ -266,7 +283,10 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
 				uint32_t tag = cdb[i].tag;
 				if(register_file[reg].tag == tag){
 					if(register_file[reg].ready){
+						printf("cycle number : %ld\n", p_stats->cycle_count);
 						std::cout<< "register file: cannot happen"<<std::endl;
+						//print_cdb();	
+						//print_register_file();
 						//assert(true);
 					}
 					register_file[reg].ready = true;
@@ -275,6 +295,7 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
 		}
 
     } else {
+		if(debug){printf("dispatch: second half\n");}
         while (!dispatching_queue.empty()) {
             auto instr = dispatching_queue.front();
             
@@ -305,15 +326,20 @@ void dispatch(proc_stats_t* p_stats, const cycle_half_t &half) {
         }        
 		
 		//clear the cdb
+		//printf("clearing cdb...\n");
 		for(uint32_t i = 0; i < cdb.size();i++){
 			cdb[i].free = true;
+			cdb[i].reg = 0;
+			cdb[i].tag = 0;
 		}
+		//print_cdb();
     }
 }
 /** INSTR-FETCH & DECODE stage */
 // dispatching queue is infinite. So push new instruction block F each time.
 void instr_fetch_and_decode(proc_stats_t* p_stats, const cycle_half_t &half) {
     if (half == cycle_half_t::SECOND) {          
+		if(debug){printf("instruction fetch: second half\n");}
         // read the next instructions 
         if (!cpu.read_finished){
             for (uint64_t i = 0; i < cpu.f; i++) { 
@@ -360,3 +386,27 @@ int get_sqfree_slots(){
 	}
 	return (scheduling_queue_limit - scheduling_queue.size());
 }
+
+
+
+void print_register_file(){
+    int i = 19;	
+	printf("printing register file\n");
+	printf("%d : %d   %ld\n",i, register_file[i].ready, register_file[i].tag);	
+   // for(int i = 0; i < 64; i++){
+	//	printf("%d : %d   %ld\n",i, register_file[i].ready, register_file[i].tag);	
+	//}
+	std::cout<<std::endl;
+}
+
+
+
+void print_cdb(){
+	printf("printing cdb\n");
+	for(int i=0;i<cdb.size();i++){
+        printf("%d : %d  %d  %d \n", i, cdb[i].free , cdb[i].reg , cdb[i].tag);
+	}
+	//std::cout<<std::endl;
+}
+
+
